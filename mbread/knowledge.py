@@ -63,25 +63,99 @@ def llm_config() -> dict:
     return cfg
 
 
-def openai_chat(system: str, user: str, cfg: dict | None = None, timeout: int = 180) -> str:
+def _env_int(name: str, default: int) -> int:
+    v = os.environ.get(name)
+    try:
+        return int(v) if v else default
+    except ValueError:
+        raise KnowledgeError(f"{name} 必须是整数，当前为 {v!r}")
+
+
+def strip_think(text: str) -> str:
+    """去掉推理模型的 <think>…</think>（含未闭合的开头块）。"""
+    t = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    if "<think>" in t:  # 没闭合：思考被截断，剩下的不可用
+        t = t.split("<think>")[0]
+    if "</think>" in t:  # 只有结束标签（模板已吃掉开头）
+        t = t.split("</think>")[-1]
+    return t.strip()
+
+
+def _extract_json_text(text: str | None) -> str | None:
+    if not text:
+        return None
+    t = strip_think(text)
+    m = re.search(r"\{.*\}", t, re.S)
+    if not m:
+        return None
+    try:
+        json.loads(m.group(0))
+        return m.group(0)
+    except json.JSONDecodeError:
+        return None
+
+
+def openai_chat(system: str, user: str, cfg: dict | None = None, timeout: int | None = None) -> str:
+    """调用 OpenAI 兼容 /chat/completions，返回去掉思考过程后的文本。
+
+    环境变量：MBREAD_MAX_TOKENS（默认 8192）、MBREAD_TIMEOUT（秒，默认 600）、
+    MBREAD_THINKING=1 开启推理模型的思考（默认通过 chat_template_kwargs 关闭）。
+    """
     import requests
     cfg = cfg or llm_config()
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
-    body = {"model": cfg["model"], "temperature": 0.2,
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            "response_format": {"type": "json_object"}}
+    timeout = timeout or _env_int("MBREAD_TIMEOUT", 600)
+    max_tokens = _env_int("MBREAD_MAX_TOKENS", 8192)
+    thinking = os.environ.get("MBREAD_THINKING", "") in ("1", "true", "yes")
+    base = {"model": cfg["model"], "temperature": 0.2, "max_tokens": max_tokens,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    extras = {"response_format": {"type": "json_object"}}
+    if not thinking:
+        extras["chat_template_kwargs"] = {"enable_thinking": False}
+    # 依次尝试：全部扩展字段 → 去掉 response_format → 去掉全部扩展（后端不认识时会 400/422）
+    variants = [extras, {k: v for k, v in extras.items() if k != "response_format"}, {}]
     h = {"Authorization": f"Bearer {cfg['api_key']}"}
-    r = requests.post(url, json=body, headers=h, timeout=timeout)
-    if r.status_code == 400:  # 部分后端不支持 response_format
-        body.pop("response_format")
-        r = requests.post(url, json=body, headers=h, timeout=timeout)
-    if r.status_code != 200:
-        raise KnowledgeError(f"LLM 请求失败 HTTP {r.status_code}: {r.text[:300]}")
-    return r.json()["choices"][0]["message"]["content"]
+
+    def post() -> dict:
+        last = None
+        for ex in variants:
+            try:
+                r = requests.post(url, json=base | ex, headers=h, timeout=(10, timeout))
+            except requests.Timeout:
+                raise KnowledgeError(f"LLM 超时（>{timeout}s）：可调大 MBREAD_TIMEOUT 或减小 --max-chars")
+            except requests.ConnectionError as e:
+                raise KnowledgeError(f"连不上 LLM 服务 {url}：{e.__class__.__name__}（服务启动了吗？）")
+            if r.status_code == 200:
+                return r.json()
+            last = r
+            if r.status_code not in (400, 422):
+                break
+        raise KnowledgeError(f"LLM 请求失败 HTTP {last.status_code}: {last.text[:300]}")
+
+    for attempt in (1, 2):
+        data = post()
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message") or {}
+        content = msg.get("content")
+        if content and strip_think(content):
+            return strip_think(content)
+        if choice.get("finish_reason") == "length":
+            raise KnowledgeError(
+                f"模型输出被 max_tokens={max_tokens} 截断，正文为空（多半是思考过程用光了额度）。"
+                "请调大 MBREAD_MAX_TOKENS（如 16384），或去掉 MBREAD_THINKING 关闭思考，或减小 --max-chars")
+        for k in ("reasoning", "reasoning_content"):
+            j = _extract_json_text(msg.get(k)) or _extract_json_text(content)
+            if j:
+                return j
+    raise KnowledgeError("LLM 两次都返回空内容（content 为空，reasoning 中也没有 JSON）。"
+                         "可检查模型是否支持关闭思考，或换模型")
 
 
-def parse_json(text: str) -> dict:
-    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", text.strip())
+def parse_json(text: str | None) -> dict:
+    if not text:
+        raise KnowledgeError("LLM 返回空内容")
+    t = strip_think(text)
+    t = re.sub(r"^```(?:json)?\s*|\s*```$", "", t)
     try:
         return json.loads(t)
     except json.JSONDecodeError:

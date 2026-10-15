@@ -51,6 +51,28 @@ mbread knowledge BV1SQpX6oETX --cookies-from-browser chrome -o k.json
 mbread validate k.json                                          # 校验时间戳和引用
 ```
 
+#### 本地模型：mlx-lm（Apple Silicon）
+
+```bash
+pip install mlx-lm                       # 可以装在单独的 venv 里
+mlx_lm.server --model /path/to/Qwen3.8-27B-MLX-4bit --port 8080   # 另开一个终端，保持运行
+
+export MBREAD_BASE_URL=http://127.0.0.1:8080/v1
+export MBREAD_API_KEY=local              # 随便填
+export MBREAD_MODEL=/path/to/Qwen3.8-27B-MLX-4bit   # 与 --model 一致
+mbread anki BV1SQpX6oETX --cookies-from-browser chrome -o out.apkg
+```
+
+可选环境变量：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `MBREAD_MAX_TOKENS` | 8192 | 单次输出上限；报「被 max_tokens 截断」时调大 |
+| `MBREAD_TIMEOUT` | 600 | 单块请求超时（秒）；本地大模型一块可能要几分钟 |
+| `MBREAD_THINKING` | 关 | 设为 `1` 时开启推理模型的思考。默认发送 `chat_template_kwargs: {enable_thinking: false}`，后端不支持时会自动去掉重试 |
+
+推理模型如果把输出放在 `reasoning` / `reasoning_content` 字段，或者带 `<think>…</think>`，mbread 会自动剔除思考过程，并从中提取 JSON。
+
 把 `out.apkg` 双击导入 Anki。背面的时间戳链接会跳到 B站对应秒数。重新生成后再导入会更新已有卡片，不会重复。
 
 **注意**：读取 Chrome cookie 必须在你自己的终端里运行（远程或代理进程会被 macOS 隐私权限拦截，报 Operation not permitted）。

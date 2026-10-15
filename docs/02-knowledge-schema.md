@@ -50,3 +50,9 @@
 - 正面：知识点标题 + 问题；背面：答案、原文引用、`▶ mm:ss–mm:ss 跳到B站原片`（`?p=N&t=秒`）、出处（《标题》· UP主 · BV号）。
 - 固定 model id `1729384001`；deck id 由 BV号+分P 哈希得出；note guid 由 BV号+知识点id+卡序号+问题得出。所以重新生成后再导入，会更新已有卡片，不会重复。
 - 卡组名：`记忆面包::<标题>`；tags：`mbread`、BV号、AI 字幕时加 `ai字幕`。
+
+## 推理模型兼容（2026-10-15）
+Neil 用 mlx_lm.server 0.32.0 跑 Qwen3.8-27B-MLX-4bit 时，content 为 None（思考过程耗尽了 max_tokens）。处理方式：
+- 默认请求带 `chat_template_kwargs: {"enable_thinking": false}`，不带 `reasoning_effort`；后端回 400/422 时，依次去掉 `response_format`、`chat_template_kwargs` 后重试。`MBREAD_THINKING=1` 开启思考。
+- `max_tokens` 默认 8192（`MBREAD_MAX_TOKENS`）；超时默认 600s（`MBREAD_TIMEOUT`，连接超时 10s）。
+- content 为空：`finish_reason == "length"` → 中文报错，建议调大 max_tokens 或关闭思考；否则从 `reasoning` / `reasoning_content` 提取 JSON；仍然没有就重试一次，再失败抛 KnowledgeError。所有文本都剔除 `<think>…</think>`。
