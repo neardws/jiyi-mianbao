@@ -18,7 +18,16 @@ import sys
 import time
 import urllib.parse
 
-import requests
+if sys.version_info < (3, 10):
+    sys.stderr.write(f"错误：mbread 需要 Python 3.10+，当前是 {sys.version.split()[0]}。"
+                     "请用 brew install python@3.12 后以 python3.12 建 venv（见 README）。\n")
+    sys.exit(1)
+
+try:
+    import requests
+except ImportError:
+    sys.stderr.write("错误：缺少依赖 requests。请在 venv 中运行：pip install -r requirements.txt\n")
+    sys.exit(1)
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
@@ -48,7 +57,7 @@ def load_browser_cookies(jar, browser: str, profile: str | None = None) -> int:
     try:
         from yt_dlp.cookies import extract_cookies_from_browser, SUPPORTED_BROWSERS
     except ImportError as e:
-        raise SubtitleError("需要安装 yt-dlp：pip install -r requirements.txt") from e
+        raise SubtitleError("缺少依赖 yt-dlp。请在 venv 中运行：pip install -r requirements.txt") from e
     if browser not in SUPPORTED_BROWSERS:
         raise SubtitleError(f"不支持的浏览器 {browser}，可选: {', '.join(sorted(SUPPORTED_BROWSERS))}")
 

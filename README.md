@@ -3,10 +3,14 @@
 
 ## 快速开始（macOS）
 
+**需要 Python 3.10+**（yt-dlp 新版不支持 3.9；macOS/Xcode 自带的 `python3` 是 3.9，不能用）。
+
 ```bash
+brew install python@3.12            # 没有 Homebrew 先装：https://brew.sh
 git clone https://github.com/neardws/jiyi-mianbao.git
 cd jiyi-mianbao
-python3 -m venv .venv && source .venv/bin/activate
+python3.12 -m venv .venv && source .venv/bin/activate
+python --version                    # 应显示 3.12.x
 pip install -r requirements.txt
 # 先在 Chrome 里登录 bilibili.com，然后验证（首次会弹钥匙串授权，点「允许」）：
 python -m mbread.subtitles BV1ys411472E --cookies-from-browser chrome --list
