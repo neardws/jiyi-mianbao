@@ -1,8 +1,10 @@
 """获取 B站视频字幕（只取字幕与元数据，绝不下载视频/音频）。
 
 用法:
-    python -m mbread.subtitles BV1ys411472E [--page 1] [--lang zh-CN] [--sessdata XXX]
-环境变量 BILI_SESSDATA 也可提供登录 cookie（可选）。
+    python -m mbread.subtitles BV1ys411472E --cookies-from-browser chrome [--list]
+    python -m mbread.subtitles BV1ys411472E --sessdata XXX      # 或环境变量 BILI_SESSDATA
+    python -m mbread.subtitles --from-file subs.srt              # 离线导入 SRT / B站 JSON
+登录 cookie 只在内存中使用：只取 .bilibili.com 域，不打印、不落盘。
 输出: JSON {"bvid","cid","title","lang","lang_doc","ai","segments":[{"start","end","text"}]}
 """
 from __future__ import annotations
@@ -41,13 +43,84 @@ def parse_bvid(s: str) -> str:
     return m.group(1)
 
 
+def load_browser_cookies(jar, browser: str, profile: str | None = None) -> int:
+    """用 yt-dlp 从本机浏览器读取 cookie，只把 bilibili.com 域的放进 jar（仅内存）。"""
+    try:
+        from yt_dlp.cookies import extract_cookies_from_browser, SUPPORTED_BROWSERS
+    except ImportError as e:
+        raise SubtitleError("需要安装 yt-dlp：pip install -r requirements.txt") from e
+    if browser not in SUPPORTED_BROWSERS:
+        raise SubtitleError(f"不支持的浏览器 {browser}，可选: {', '.join(sorted(SUPPORTED_BROWSERS))}")
+
+    class _Quiet:  # 屏蔽 yt-dlp 日志，避免任何 cookie 信息出现在输出里
+        def debug(self, *a, **k): pass
+        def info(self, *a, **k): pass
+        def warning(self, *a, **k): pass
+        def error(self, *a, **k): pass
+        def progress_bar(self): return None
+
+    try:
+        src = extract_cookies_from_browser(browser, profile, logger=_Quiet())
+    except Exception as e:
+        raise SubtitleError(f"读取 {browser} cookie 失败: {type(e).__name__}"
+                            "（Safari 需给终端「完全磁盘访问权限」；Chrome 需允许钥匙串访问）") from e
+    n = 0
+    for c in src:
+        d = (c.domain or "").lstrip(".")
+        if d == "bilibili.com" or d.endswith(".bilibili.com"):
+            jar.set_cookie(c)
+            n += 1
+    del src
+    if n == 0:
+        raise SubtitleError(f"{browser} 里没有 bilibili.com 的 cookie，请先在该浏览器登录 B站")
+    return n
+
+
+def _ts(t: str) -> float:
+    h, m, rest = t.strip().replace(",", ".").split(":")
+    return int(h) * 3600 + int(m) * 60 + float(rest)
+
+
+def load_subtitle_file(path: str) -> dict:
+    """离线导入 SRT 或 B站字幕 JSON（{"body":[{"from","to","content"}]}）。"""
+    with open(path, encoding="utf-8-sig") as f:
+        raw = f.read()
+    segs = []
+    if raw.lstrip().startswith(("{", "[")):
+        j = json.loads(raw)
+        body = j.get("body", j.get("segments", [])) if isinstance(j, dict) else j
+        for b in body:
+            segs.append({"start": round(float(b.get("from", b.get("start"))), 3),
+                         "end": round(float(b.get("to", b.get("end"))), 3),
+                         "text": str(b.get("content", b.get("text", ""))).strip()})
+    else:
+        for block in re.split(r"\n\s*\n", raw.replace("\r\n", "\n").strip()):
+            lines = block.strip().split("\n")
+            i = next((k for k, l in enumerate(lines) if "-->" in l), None)
+            if i is None:
+                continue
+            a, b = lines[i].split("-->")
+            segs.append({"start": round(_ts(a), 3), "end": round(_ts(b.split()[0]), 3),
+                         "text": "\n".join(lines[i + 1:]).strip()})
+    segs = [s for s in segs if s["text"]]
+    if not segs:
+        raise NoSubtitleError(f"{path} 中没有解析到字幕段")
+    return {"bvid": None, "source_file": os.path.basename(path), "segments": segs}
+
+
 class Bili:
-    def __init__(self, sessdata: str | None = None, timeout: int = 15):
+    def __init__(self, sessdata: str | None = None, timeout: int = 15,
+                 browser: str | None = None, profile: str | None = None):
         self.s = requests.Session()
         self.s.headers.update({"User-Agent": UA, "Referer": "https://www.bilibili.com/"})
         self.timeout = timeout
-        if sessdata:
+        self.cookie_source = None
+        if browser:
+            n = load_browser_cookies(self.s.cookies, browser, profile)
+            self.cookie_source = f"浏览器 {browser}（{n} 个 bilibili cookie）"
+        elif sessdata:
             self.s.cookies.set("SESSDATA", sessdata, domain=".bilibili.com")
+            self.cookie_source = "SESSDATA"
         # 拿 buvid3 等基础 cookie，降低风控概率
         self.s.get("https://www.bilibili.com/", timeout=timeout)
         nav = self.s.get("https://api.bilibili.com/x/web-interface/nav", timeout=timeout).json()
@@ -103,15 +176,17 @@ def list_tracks(bili: Bili, bvid: str, page: int = 1) -> tuple[dict, int, list[d
 
 
 def get_subtitles(src: str, page: int = 1, lang: str | None = None,
-                  sessdata: str | None = None) -> dict:
+                  sessdata: str | None = None, browser: str | None = None,
+                  profile: str | None = None) -> dict:
     bvid = parse_bvid(src)
-    bili = Bili(sessdata or os.environ.get("BILI_SESSDATA"))
+    bili = Bili(sessdata or os.environ.get("BILI_SESSDATA"), browser=browser, profile=profile)
+    _login_note(bili)
     v, cid, tracks = list_tracks(bili, bvid, page)
     tracks = [t for t in tracks if t.get("subtitle_url")]
     if not tracks:
         if not bili.logged_in and v.get("_need_login_subtitle"):
-            raise NoSubtitleError(f"{bvid} P{page}: 接口返回 need_login_subtitle=true，"
-                                  "未登录拿不到字幕列表；请设置 BILI_SESSDATA 后重试")
+            raise NoSubtitleError(f"{bvid} P{page}: 接口返回 need_login_subtitle=true，未登录拿不到字幕；"
+                                  "请用 --cookies-from-browser chrome（或 safari/edge/firefox）或 BILI_SESSDATA")
         hint = "" if bili.logged_in else "（当前未登录）"
         raise NoSubtitleError(f"{bvid} P{page} 没有可用字幕{hint}")
     pick = None
@@ -132,23 +207,47 @@ def get_subtitles(src: str, page: int = 1, lang: str | None = None,
             "segments": segs}
 
 
+def _login_note(bili: "Bili") -> None:
+    if bili.logged_in:
+        print(f"已登录 B站（cookie 来源：{bili.cookie_source}）", file=sys.stderr)
+    elif bili.cookie_source:
+        print(f"警告：已加载 {bili.cookie_source}，但 B站判定未登录（cookie 可能过期，请在浏览器重新登录）",
+              file=sys.stderr)
+    else:
+        print("未登录 B站：字幕大概率拿不到，建议加 --cookies-from-browser chrome", file=sys.stderr)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="获取 B站视频带时间戳字幕")
-    ap.add_argument("src", help="BV 号或视频链接")
+    ap.add_argument("src", nargs="?", help="BV 号或视频链接")
+    ap.add_argument("--cookies-from-browser", dest="browser", metavar="BROWSER",
+                    help="从本机浏览器读取 B站登录 cookie：chrome/edge/safari/firefox/brave/chromium/opera/vivaldi")
+    ap.add_argument("--browser-profile", help="浏览器 profile 名（可选）")
+    ap.add_argument("--from-file", help="离线导入 SRT 或 B站 JSON 字幕文件")
     ap.add_argument("--page", type=int, default=1)
     ap.add_argument("--lang")
     ap.add_argument("--sessdata")
     ap.add_argument("--list", action="store_true", help="只列出字幕轨道")
     a = ap.parse_args(argv)
     try:
+        if a.from_file:
+            out = load_subtitle_file(a.from_file)
+            if a.src:
+                out["bvid"] = parse_bvid(a.src)
+                out["url"] = f"https://www.bilibili.com/video/{out['bvid']}?p={a.page}"
+            print(json.dumps(out, ensure_ascii=False, indent=2))
+            return 0
+        if not a.src:
+            ap.error("需要 BV 号/链接，或使用 --from-file")
         if a.list:
-            b = Bili(a.sessdata or os.environ.get("BILI_SESSDATA"))
+            b = Bili(a.sessdata or os.environ.get("BILI_SESSDATA"), browser=a.browser, profile=a.browser_profile)
+            _login_note(b)
             v, cid, t = list_tracks(b, parse_bvid(a.src), a.page)
             print(json.dumps({"title": v.get("title"), "cid": cid, "logged_in": b.logged_in,
                               "tracks": [{k: x.get(k) for k in ("lan", "lan_doc", "subtitle_url")} for x in t]},
                              ensure_ascii=False, indent=2))
             return 0
-        print(json.dumps(get_subtitles(a.src, a.page, a.lang, a.sessdata), ensure_ascii=False, indent=2))
+        print(json.dumps(get_subtitles(a.src, a.page, a.lang, a.sessdata, a.browser, a.browser_profile), ensure_ascii=False, indent=2))
         return 0
     except NoSubtitleError as e:
         print(f"无字幕: {e}", file=sys.stderr); return 2

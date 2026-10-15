@@ -54,3 +54,14 @@ BILI_SESSDATA=xxx python -m mbread.subtitles <BV或链接> [--page N] [--lang zh
 - 是否提供 B站 SESSDATA（建议用小号；存在本地环境变量，不提交）。
 - 无字幕视频怎么处理：直接报错跳过，还是允许音频 ASR（会突破「不下载音频」的规矩）。
 - 是否值得在国内网络下再测一次 yt-dlp。
+
+## 更新（2026-10-15）：登录方式定为「读本机浏览器 cookie」
+Neil 决定不把 SESSDATA 交给 box，`mbread` 在用户自己的 Mac 上运行：
+- `--cookies-from-browser {chrome,edge,safari,firefox,brave,chromium,opera,vivaldi,whale}`：调用 `yt_dlp.cookies.extract_cookies_from_browser`（处理 macOS Keychain / Safari binarycookies），只把域名为 `bilibili.com` 或 `*.bilibili.com` 的 cookie 放进内存 session；yt-dlp 日志被静音，cookie 不打印、不写文件。
+- `--sessdata` / `BILI_SESSDATA` 保留为备选。
+- 运行时在 stderr 提示：已登录（含 cookie 来源）/ 加载了 cookie 但仍未登录（cookie 过期）/ 未登录。
+- `--from-file`：离线导入 SRT 或 B站字幕 JSON，输出同样的 `segments` 结构，作为接口失效时的备用路径。
+
+验证情况：
+- ✅ box 上：`--from-file` 解析 SRT（含多行字幕）与 B站 JSON；域名过滤（用伪造的 Firefox cookies.sqlite 测试，`.bilibili.com`、`.api.bilibili.com` 被保留，`.google.com`、`evilbilibili.com` 被排除）；cookie 失效/未登录提示；不支持浏览器的报错。
+- ❌ 未验证：真实 Mac 上 Chrome/Safari 解密、登录后 `player/wbi/v2` 是否返回人工/AI 字幕、字幕 JSON 下载与解析的线上路径。需 Neil 在 Mac 上跑验证命令。
