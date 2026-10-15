@@ -1,0 +1,6 @@
+requests>=2.31
+yt-dlp>=2026.8.19
+genanki>=0.13
+
+[dev]
+pytest>=8

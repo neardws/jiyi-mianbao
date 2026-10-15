@@ -184,6 +184,22 @@ def list_tracks(bili: Bili, bvid: str, page: int = 1) -> tuple[dict, int, list[d
     return v, cid, tracks
 
 
+def pick_track(tracks: list[dict], lang: str | None = None) -> dict | None:
+    """指定 lang 时精确匹配；否则优先级：人工 zh* > ai-zh > 其他人工 > 其他 AI。"""
+    if lang:
+        return next((t for t in tracks if t.get("lan") == lang), None)
+    if not tracks:
+        return None
+
+    def rank(t: dict) -> int:
+        lan = str(t.get("lan", ""))
+        if lan.startswith("ai-"):
+            return 1 if lan.startswith("ai-zh") else 3
+        return 0 if lan.startswith("zh") else 2
+
+    return min(tracks, key=rank)
+
+
 def get_subtitles(src: str, page: int = 1, lang: str | None = None,
                   sessdata: str | None = None, browser: str | None = None,
                   profile: str | None = None) -> dict:
@@ -198,11 +214,10 @@ def get_subtitles(src: str, page: int = 1, lang: str | None = None,
                                   "请用 --cookies-from-browser chrome（或 safari/edge/firefox）或 BILI_SESSDATA")
         hint = "" if bili.logged_in else "（当前未登录）"
         raise NoSubtitleError(f"{bvid} P{page} 没有可用字幕{hint}")
-    pick = None
-    if lang:
-        pick = next((t for t in tracks if t.get("lan") == lang), None)
-    if pick is None:  # 优先人工字幕，再 AI 字幕
-        pick = sorted(tracks, key=lambda t: str(t.get("lan", "")).startswith("ai-"))[0]
+    pick = pick_track(tracks, lang)
+    if pick is None:
+        raise NoSubtitleError(f"{bvid} 没有语言为 {lang} 的字幕，可用: "
+                              + ", ".join(str(t.get("lan")) for t in tracks))
     body = bili.fetch_json(pick["subtitle_url"]).get("body") or []
     segs = [{"start": round(float(b["from"]), 3), "end": round(float(b["to"]), 3),
              "text": b["content"].strip()} for b in body]

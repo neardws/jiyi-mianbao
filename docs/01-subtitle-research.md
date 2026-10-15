@@ -65,3 +65,22 @@ Neil 决定不把 SESSDATA 交给 box，`mbread` 在用户自己的 Mac 上运�
 验证情况：
 - ✅ box 上：`--from-file` 解析 SRT（含多行字幕）与 B站 JSON；域名过滤（用伪造的 Firefox cookies.sqlite 测试，`.bilibili.com`、`.api.bilibili.com` 被保留，`.google.com`、`evilbilibili.com` 被排除）；cookie 失效/未登录提示；不支持浏览器的报错。
 - ❌ 未验证：真实 Mac 上 Chrome/Safari 解密、登录后 `player/wbi/v2` 是否返回人工/AI 字幕、字幕 JSON 下载与解析的线上路径。需 Neil 在 Mac 上跑验证命令。
+
+## Neil 在 Mac 上的实测（2026-10-15，已登录）
+- `--cookies-from-browser chrome`：读取成功，加载 32 个 bilibili cookie，`logged_in: true`。
+- **注意**：从远程代理进程读 Chrome cookie 会被 macOS TCC（隐私权限）拦截，报 `Operation not permitted`；必须在 Neil 自己的终端里运行。
+
+| BV 号 | 登录后字幕轨道 | 人工 CC |
+|---|---|---|
+| BV1ys411472E 线性代数的本质 | 空（双语字幕是烧录在画面里的） | 无 |
+| BV1VZWc6dECG 从零开始的AI学习 | 多语 AI 轨，可见 ai-en / ai-ja / ai-th / ai-id 等（输出被截断，未看全） | 无 |
+| BV1gaWA6HE7S 皮莱是谁 | 多语 AI 轨，可见 ai-en / ai-ja / ai-th / ai-id 等（输出被截断，未看全） | 无 |
+| BV1SQpX6oETX 下沉通道也堵了 | 只有 ai-zh | 无 |
+| BV1VZpm6EEEG 大暴雨来了 | 只有 ai-zh | 无 |
+
+- `python -m mbread.subtitles BV1SQpX6oETX --cookies-from-browser chrome --lang ai-zh` 成功解析出带时间戳的 segments，元数据正确：标题、UP 主「法山叔」、url，`ai: true`。
+
+结论更新：
+1. 登录后 AI 字幕可以拿到，**AI 字幕是主要来源**；这 5 个样本里没有人工 CC。
+2. 字幕烧录在画面里的视频（如 BV1ys411472E）接口里没有字幕轨道，只能报错，或以后另做 OCR 或 ASR（需要另行决定）。
+3. 选轨策略（已实现在 `pick_track`）：指定 `--lang` 时精确匹配，找不到就报错并列出可用轨道；不指定时，优先级为人工 zh* > ai-zh > 其他人工 > 其他 AI。

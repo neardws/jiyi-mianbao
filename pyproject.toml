@@ -3,8 +3,14 @@ name = "mbread"
 version = "0.0.1"
 description = "记忆面包：B站链接 → 带时间戳的 Anki 卡组和小红书卡片"
 requires-python = ">=3.10"
-dependencies = ["requests>=2.31", "yt-dlp>=2026.8.19"]
 license = { text = "MIT" }
+dependencies = ["requests>=2.31", "yt-dlp>=2026.8.19", "genanki>=0.13"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+mbread = "mbread.cli:main"
 
 [build-system]
 requires = ["setuptools>=61"]
